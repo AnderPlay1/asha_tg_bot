@@ -41,6 +41,8 @@ class TaskStates(StatesGroup):
 
 
 def is_video_file(path: str) -> bool:
+    if path.startswith('tg_file_id:'):
+        return True  # videos stored as Telegram file_id references
     video_extensions = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv')
     return path.lower().endswith(video_extensions)
 
@@ -227,11 +229,12 @@ async def send_next_task(message: Message, state: FSMContext, user_id: int) -> N
 
     # Send video if available
     if task_item.sample_video:
-        sample_path = Path(task_item.sample_video)
-        if sample_path.exists():
-            video_source = FSInputFile(sample_path)
+        if task_item.sample_video.startswith('tg_file_id:'):
+            video_source = task_item.sample_video[len('tg_file_id:'):]
         else:
-            video_source = task_item.sample_video
+            sample_path = Path(task_item.sample_video)
+            video_source = FSInputFile(
+                sample_path) if sample_path.exists() else task_item.sample_video
 
         await message.answer_video(
             video=video_source,
@@ -412,7 +415,11 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
                 f"Комментарий: {caption}"
             )
             try:
-                await bot.send_photo(query.from_user.id, photo=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
+                media_type = submission.get('media_type') or 'photo'
+                if media_type == 'video':
+                    await bot.send_video(query.from_user.id, video=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
+                else:
+                    await bot.send_photo(query.from_user.id, photo=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
             except Exception:
                 await query.message.answer(text, reply_markup=build_review_keyboard(submission['id']))
         return
@@ -586,19 +593,12 @@ async def cmd_video(message: Message, state: FSMContext) -> None:
             await message.answer('Отправь видео.')
             return
 
-        # Save video to videos directory
+        # For videos, store file_id directly (Bot API limits downloads to 20MB).
+        # Telegram keeps the file and we can resend it by file_id at any time.
         video = message.video
-        file_info = await bot.get_file(video.file_id)
-        video_filename = f'videos/task_{datetime.now().timestamp()}.mp4'
-        video_path = Path(video_filename)
+        file_id_ref = f'tg_file_id:{video.file_id}'
 
-        # Ensure videos directory exists
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Download and save video
-        await bot.download_file(file_info.file_path, str(video_path))
-
-        media_paths.append(video_filename)
+        media_paths.append(file_id_ref)
         await state.update_data(media_paths=media_paths)
 
         await message.answer('✅ Видео добавлено!', reply_markup=create_done_media_keyboard())
