@@ -51,7 +51,8 @@ def is_video_file(path: str) -> bool:
 async def load_tasks() -> list[TaskItem]:
     task_path = Path(config.task_file)
     if not task_path.exists():
-        raise FileNotFoundError(f'Task file not found: {task_path}')
+        task_path.touch()
+        return []
 
     tasks_list: list[TaskItem] = []
     with task_path.open('r', encoding='utf-8') as source:
@@ -85,9 +86,6 @@ async def load_tasks() -> list[TaskItem]:
                 sample_image=image_path or None,
                 sample_video=video_path or None
             ))
-
-    if not tasks_list:
-        raise RuntimeError('Task file is empty')
 
     return tasks_list
 
@@ -214,7 +212,10 @@ async def send_next_task(message: Message, state: FSMContext, user_id: int) -> N
     next_task = await get_next_task(user_id)
     if not next_task:
         await state.clear()
-        await message.answer('Все задания выполнены — спасибо за участие!')
+        if not tasks:
+            await message.answer('⚠️ Задания ещё не добавлены. Ожди — скоро начнём!')
+        else:
+            await message.answer('🎉 Все задания выполнены — спасибо за участие!')
         return
 
     task_index, task_item = next_task
