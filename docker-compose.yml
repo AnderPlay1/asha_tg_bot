@@ -1,0 +1,11 @@
+services:
+  asha_bot:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./tasks.txt:/app/tasks.txt
+      - ./photos:/app/photos
+      - ./videos:/app/videos
+    restart: unless-stopped
