@@ -118,6 +118,29 @@ async def save_task_to_file(task_text: str, media_paths: list[str] | None = None
     tasks = await load_tasks()
 
 
+async def delete_task(task_index: int) -> bool:
+    task_path = Path(config.task_file)
+
+    if not task_path.exists():
+        return False
+
+    with task_path.open('r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    if task_index < 0 or task_index >= len(lines):
+        return False
+
+    del lines[task_index]
+
+    with task_path.open('w', encoding='utf-8') as f:
+        f.writelines(lines)
+
+    global tasks
+    tasks = await load_tasks()
+
+    return True
+
+
 async def initialize_database() -> None:
     Path(config.db_path).parent.mkdir(parents=True, exist_ok=True)
     await db.init_db(config.db_path)
@@ -206,6 +229,8 @@ def create_admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text='Статистика', callback_data='admin:stats')],
         [InlineKeyboardButton(text='Добавить задание',
                               callback_data='admin:add_task')],
+        [InlineKeyboardButton(text='Задания',
+                              callback_data='admin:tasks')],
         [InlineKeyboardButton(text='🛑 Завершить квест',
                               callback_data='admin:end_quest')],
     ])
@@ -452,6 +477,20 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
                     await bot.send_photo(query.from_user.id, photo=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
             except Exception as e:
                 await query.message.answer(f'{text}\n\n⚠️ Файл не удалось отправить: {e}', reply_markup=build_review_keyboard(submission['id']))
+    if query.data == 'admin:tasks':
+        if not tasks:
+            await query.message.answer('Заданий пока нет.')
+            return
+
+        text = ['📋 Список заданий:\n']
+
+        for idx, task in enumerate(tasks, start=1):
+            text.append(f'{idx}. {task.text}')
+
+        await query.message.answer(
+            '\n'.join(text),
+            reply_markup=build_tasks_keyboard()
+        )
         return
 
     if query.data == 'admin:leaderboard':
@@ -514,7 +553,7 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
             try:
                 await bot.send_message(
                     user['tg_id'],
-                    '⏹️ Фотоквест завершён вручную администратором. Спасибо за участие!'
+                    '⏹️ Фотоквест завершён. Спасибо за участие!'
                 )
             except Exception:
                 continue
@@ -692,9 +731,44 @@ async def cmd_callback(query: CallbackQuery, state: FSMContext) -> None:
             await state.clear()
         return
 
+    if data.startswith('task_delete:'):
+        task_index = int(data.split(':')[1])
+
+        if await delete_task(task_index):
+            await query.answer('Удалено')
+            await query.message.answer(
+                '✅ Задание удалено',
+                reply_markup=create_admin_menu()
+            )
+        else:
+            await query.answer('Ошибка')
+
+        return
+
     if data.startswith('admin:') or data.startswith('review:'):
         await admin_callback(query, state)
         return
+
+
+def build_tasks_keyboard() -> InlineKeyboardMarkup:
+    keyboard = []
+
+    for idx, task in enumerate(tasks):
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f'Удалить #{idx + 1}',
+                callback_data=f'task_delete:{idx}'
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text='⬅ Назад',
+            callback_data='admin:back'
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 async def on_startup() -> None:
