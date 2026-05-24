@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS submissions (
     reviewed_at TEXT,
     reviewer_id INTEGER,
     review_comment TEXT,
+    media_type TEXT NOT NULL DEFAULT 'photo',
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 '''
@@ -45,6 +46,14 @@ async def init_db(db_path: str):
         await db.execute(CREATE_SUBMISSIONS)
         await db.execute(CREATE_SETTINGS)
         await db.commit()
+        # Migration: add media_type if missing
+        try:
+            await db.execute(
+                "ALTER TABLE submissions ADD COLUMN media_type TEXT NOT NULL DEFAULT 'photo'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # column already exists
 
 
 async def get_user(db: aiosqlite.Connection, tg_id: int):
@@ -92,11 +101,12 @@ async def get_submission(db: aiosqlite.Connection, submission_id: int):
     return await cursor.fetchone()
 
 
-async def insert_submission(db: aiosqlite.Connection, user_id: int, task_index: int, task_text: str, file_id: str, caption: str | None):
+async def insert_submission(db: aiosqlite.Connection, user_id: int, task_index: int, task_text: str, file_id: str, caption: str | None, media_type: str = 'photo'):
     submitted_at = datetime.utcnow().isoformat()
     cursor = await db.execute(
-        'INSERT INTO submissions (user_id, task_index, task_text, file_id, caption, submitted_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        (user_id, task_index, task_text, file_id, caption, submitted_at, 'pending'),
+        'INSERT INTO submissions (user_id, task_index, task_text, file_id, caption, submitted_at, status, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (user_id, task_index, task_text, file_id,
+         caption, submitted_at, 'pending', media_type),
     )
     await db.commit()
     return cursor.lastrowid
@@ -150,9 +160,9 @@ async def get_leaderboard(db: aiosqlite.Connection, limit: int = 10):
             COUNT(s.id) as total_submissions
         FROM users u
         LEFT JOIN submissions s ON u.id = s.user_id
-        WHERE u.is_admin = 0
         GROUP BY u.id
-        ORDER BY accepted_count DESC, total_submissions DESC
+        HAVING accepted_count > 0
+        ORDER BY accepted_count DESC, total_submissions ASC
         LIMIT ?
     ''', (limit,))
     return await cursor.fetchall()

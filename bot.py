@@ -36,6 +36,7 @@ class TaskItem:
 class TaskStates(StatesGroup):
     waiting_for_photo = State()
     waiting_for_confirmation = State()
+    waiting_for_review = State()
     adding_task_text = State()
     adding_task_media_optional = State()
 
@@ -265,7 +266,7 @@ async def start_handler(message: Message, state: FSMContext) -> None:
         return
 
     user = await ensure_user(message)
-    await message.answer('Привет! Добро пожаловать в фотоквест.')
+    await message.answer('Привет, СтСник. Пока мясо готовится, а в волейбол играть еще не начали, можешь пройти квест за призы от перваков 🎁\n\nЗа первое место споем персональную переделанную песню, за второе — сделаем эдит, за третье — упоминание в посте.\n\nЭтот бот будет выдавать тебе задания. Ответом на каждое задание должна быть фотка или видео. Чем больше заданий выполнишь, тем выше шанс победить 💪')
     await send_next_task(message, state, user['id'])
 
 
@@ -308,10 +309,11 @@ async def confirm_callback(query: CallbackQuery, state: FSMContext) -> None:
 
     async with db.aiosqlite.connect(config.db_path) as conn:
         user = await db.get_user(conn, query.from_user.id)
-        await db.insert_submission(conn, user['id'], task_index, task_text, file_id, caption)
+        media_type = data.get('media_type', 'photo')
+        await db.insert_submission(conn, user['id'], task_index, task_text, file_id, caption, media_type)
 
-    await query.message.answer('Ответ сохранён. Сейчас выдаю следующее задание.')
-    await send_next_task(query.message, state, user['id'])
+    await state.set_state(TaskStates.waiting_for_review)
+    await query.message.answer('✅ Ответ отправлен на проверку. Ожди оценки — после этого выдам следующее задание.')
 
 
 async def has_admin_rights(user_id: int) -> bool:
@@ -415,13 +417,13 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
                 f"Комментарий: {caption}"
             )
             try:
-                media_type = submission.get('media_type') or 'photo'
+                media_type = submission['media_type'] if submission['media_type'] else 'photo'
                 if media_type == 'video':
                     await bot.send_video(query.from_user.id, video=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
                 else:
                     await bot.send_photo(query.from_user.id, photo=submission['file_id'], caption=text, reply_markup=build_review_keyboard(submission['id']))
-            except Exception:
-                await query.message.answer(text, reply_markup=build_review_keyboard(submission['id']))
+            except Exception as e:
+                await query.message.answer(f'{text}\n\n⚠️ Файл не удалось отправить: {e}', reply_markup=build_review_keyboard(submission['id']))
         return
 
     if query.data == 'admin:leaderboard':
@@ -429,18 +431,22 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
             leaderboard = await db.get_leaderboard(conn, limit=10)
 
         if not leaderboard:
-            await query.message.answer('Пока нет участников с принятыми заданиями.')
+            await query.message.answer('🏆 Пока никто не выполнил ни одного задания с оценкой «принято».')
             return
 
         lines = ['🏆 <b>Рейтинг участников</b>\n']
         for idx, user in enumerate(leaderboard, 1):
-            name = user['username'] or user['first_name'] or str(user['tg_id'])
+            if user['username']:
+                name = f"<a href='tg://user?id={user['tg_id']}'>@{user['username']}</a>"
+            else:
+                name = user['first_name'] or str(user['tg_id'])
             accepted = user['accepted_count']
             total = user['total_submissions']
             medal = '🥇' if idx == 1 else '🥈' if idx == 2 else '🥉' if idx == 3 else f'{idx}.'
-            lines.append(f'{medal} {name}: <b>{accepted}</b> ✅ / {total} 📸')
+            lines.append(
+                f'{medal} {name}: <b>{accepted}</b> ✅ ({total} всего попыток)')
 
-        await query.message.answer('\n'.join(lines))
+        await query.message.answer('\n'.join(lines), disable_web_page_preview=True)
         return
 
     if query.data == 'admin:stats':
@@ -496,10 +502,20 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
             submission = await db.get_submission(conn, submission_id)
 
         await query.message.answer(f'Заявка #{submission_id} отмечена как {status}.')
-        await bot.send_message(
-            submission['tg_id'],
-            f"Ваш ответ на задание \"{submission['task_text']}\" был {status}.",
-        )
+        user_tg_id = submission['tg_id']
+        if status == 'accepted':
+            user_state = FSMContext(storage=dp.storage, key=dp.storage.resolve_address(
+                bot=bot, chat_id=user_tg_id, user_id=user_tg_id))
+            await bot.send_message(user_tg_id, f"✅ Задание \"{submission['task_text']}\" — принято! Выдаю следующее задание...")
+            async with db.aiosqlite.connect(config.db_path) as conn:
+                db_user = await db.get_user(conn, user_tg_id)
+            fake_msg = await bot.send_message(user_tg_id, '🔄')
+            await send_next_task(fake_msg, user_state, db_user['id'])
+        else:
+            user_state = FSMContext(storage=dp.storage, key=dp.storage.resolve_address(
+                bot=bot, chat_id=user_tg_id, user_id=user_tg_id))
+            await user_state.set_state(TaskStates.waiting_for_photo)
+            await bot.send_message(user_tg_id, f"❌ Задание \"{submission['task_text']}\" — не принято. Отправь новый вариант.")
         return
 
 
@@ -576,6 +592,9 @@ async def cmd_photo(message: Message, state: FSMContext) -> None:
         return
 
     # Handle regular photo submission
+    if await state.get_state() == TaskStates.waiting_for_review:
+        await message.answer('⚳ Подожди, пока проверяют твой предыдущий ответ.')
+        return
     await photo_handler(message, state)
 
 
@@ -605,6 +624,9 @@ async def cmd_video(message: Message, state: FSMContext) -> None:
         return
 
     # Handle video submission from user
+    if current_state == TaskStates.waiting_for_review:
+        await message.answer('⚳ Подожди, пока проверяют твой предыдущий ответ.')
+        return
     if current_state != TaskStates.waiting_for_photo:
         await message.answer('Пожалуйста, начни с команды /start, чтобы получить задание.')
         return
