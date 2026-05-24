@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import random
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,6 +18,16 @@ from config import Config
 import db
 
 config = Config.from_env()
+
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    force=True,
+)
+logger = logging.getLogger(__name__)
+logging.getLogger('aiogram').setLevel(logging.INFO)
+
 bot = Bot(
     token=config.bot_token,
     default=DefaultBotProperties(parse_mode='HTML'),
@@ -683,12 +695,15 @@ async def cmd_callback(query: CallbackQuery, state: FSMContext) -> None:
 
 
 async def on_startup() -> None:
+    logger.info('Initializing database and loading tasks...')
     await initialize_database()
     global tasks
     tasks = await load_tasks()
+    logger.info('Loaded %d task(s) from %s', len(tasks), config.task_file)
     asyncio.create_task(schedule_event_end())
 
 
 if __name__ == '__main__':
     dp.startup.register(on_startup)
+    logger.info('Starting Telegram bot polling...')
     dp.run_polling(bot, skip_updates=True)
