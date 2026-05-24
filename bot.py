@@ -330,7 +330,15 @@ async def confirm_callback(query: CallbackQuery, state: FSMContext) -> None:
 
 
 async def has_admin_rights(user_id: int) -> bool:
-    return user_id == config.admin_id
+    # Главный админ из конфига
+    if user_id == config.admin_id:
+        return True
+
+    # Дополнительные админы из БД
+    async with db.aiosqlite.connect(config.db_path) as conn:
+        user = await db.get_user(conn, user_id)
+
+    return bool(user and user['is_admin'])
 
 
 async def admin_command(message: Message) -> None:
