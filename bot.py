@@ -325,8 +325,15 @@ async def confirm_callback(query: CallbackQuery, state: FSMContext) -> None:
         media_type = data.get('media_type', 'photo')
         await db.insert_submission(conn, user['id'], task_index, task_text, file_id, caption, media_type)
 
-    await state.set_state(TaskStates.waiting_for_review)
-    await query.message.answer('✅ Ответ отправлен на проверку. Ожди оценки — после этого выдам следующее задание.')
+    await query.message.answer(
+        '✅ Ответ отправлен на проверку.'
+    )
+
+    await send_next_task(
+        query.message,
+        state,
+        user['id']
+    )
 
 
 async def has_admin_rights(user_id: int) -> bool:
@@ -525,19 +532,15 @@ async def admin_callback(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer(f'Заявка #{submission_id} отмечена как {status}.')
         user_tg_id = submission['tg_id']
         if status == 'accepted':
-            user_state = FSMContext(storage=dp.storage, key=dp.storage.resolve_address(
-                bot=bot, chat_id=user_tg_id, user_id=user_tg_id))
-            await bot.send_message(user_tg_id, f"✅ Задание \"{submission['task_text']}\" — принято! Выдаю следующее задание...")
-            async with db.aiosqlite.connect(config.db_path) as conn:
-                db_user = await db.get_user(conn, user_tg_id)
-            fake_msg = await bot.send_message(user_tg_id, '🔄')
-            await send_next_task(fake_msg, user_state, db_user['id'])
+            await bot.send_message(
+                user_tg_id,
+                f"✅ Задание \"{submission['task_text']}\" принято!"
+            )
         else:
-            user_state = FSMContext(storage=dp.storage, key=dp.storage.resolve_address(
-                bot=bot, chat_id=user_tg_id, user_id=user_tg_id))
-            await user_state.set_state(TaskStates.waiting_for_photo)
-            await bot.send_message(user_tg_id, f"❌ Задание \"{submission['task_text']}\" — не принято. Отправь новый вариант.")
-        return
+            await bot.send_message(
+                user_tg_id,
+                f"❌ Задание \"{submission['task_text']}\" отклонено."
+            )
 
 
 @dp.message(Command('start'))
@@ -612,10 +615,6 @@ async def cmd_photo(message: Message, state: FSMContext) -> None:
         await message.answer('✅ Фото добавлено! Отправь видео (опционально) или нажми "Готово":', reply_markup=create_done_media_keyboard())
         return
 
-    # Handle regular photo submission
-    if await state.get_state() == TaskStates.waiting_for_review:
-        await message.answer('⚳ Подожди, пока проверяют твой предыдущий ответ.')
-        return
     await photo_handler(message, state)
 
 
@@ -644,10 +643,6 @@ async def cmd_video(message: Message, state: FSMContext) -> None:
         await message.answer('✅ Видео добавлено!', reply_markup=create_done_media_keyboard())
         return
 
-    # Handle video submission from user
-    if current_state == TaskStates.waiting_for_review:
-        await message.answer('⚳ Подожди, пока проверяют твой предыдущий ответ.')
-        return
     if current_state != TaskStates.waiting_for_photo:
         await message.answer('Пожалуйста, начни с команды /start, чтобы получить задание.')
         return
