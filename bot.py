@@ -213,7 +213,7 @@ async def send_next_task(message: Message, state: FSMContext, user_id: int) -> N
     if not next_task:
         await state.clear()
         if not tasks:
-            await message.answer('⚠️ Задания ещё не добавлены. Ожди — скоро начнём!')
+            await message.answer('⚠️ Задания ещё не добавлены. Подожди — скоро начнём!')
         else:
             await message.answer('🎉 Все задания выполнены — спасибо за участие!')
         return
